@@ -2,7 +2,6 @@ import os
 import random
 import numpy as np
 from matplotlib import pyplot as plt
-import cv2
 from PIL import Image
 
 import torch
@@ -11,8 +10,6 @@ import torch.nn.functional as F
 import torch.optim as optim
 from torch.utils.data import DataLoader
 from torch.utils.data import Dataset as ParentDataset
-
-from skimage.transform import resize, rescale, rotate
 
 import torchvision 
 from torchvision import transforms
@@ -72,9 +69,6 @@ class TBI_dataset(ParentDataset): #Obtain the attributes of ParentDataset from t
             
     def __getitem__(self, ii): #ii is the index
         
-       # image = cv2.imread(self.images_fps[self.mapping[ii]],-1)
-        #label = cv2.imread(self.labels_fps[self.mapping[ii]],-1)
-        
         #Current implementations of transforms only use PIL images.
         image = Image.open(self.images_fps[self.mapping[ii]]) #open as PIL image.
         label = Image.open(self.labels_fps[self.mapping[ii]])
@@ -85,23 +79,23 @@ class TBI_dataset(ParentDataset): #Obtain the attributes of ParentDataset from t
         return image, label, self.images_fps[self.mapping[ii]],self.labels_fps[self.mapping[ii]]
     
     def __len__(self):
-        return len(self.ids)
+        return len(self.mapping)
     
     
-def datasets(images_dir, labels_dir, train_size, aug_scale, aug_angle):
+def datasets(images_dir, labels_dir, train_size, aug_angle, aug_scale, flip_prob):
     train = TBI_dataset(
         images_dir = images_dir,
         labels_dir = labels_dir,
         train_size = 0.75,
         subset="train",
-        transform=transform_function(scale=aug_scale, angle=aug_angle, flip_prob=0.5),
+        transform=transform_function(degrees=aug_angle, scale=aug_scale, flip_prob=flip_prob),
     )
     valid = TBI_dataset(
         images_dir=images_dir,
         labels_dir = labels_dir,
         train_size = 0.75,
         subset="val",
-        transform=transform_function(scale=aug_scale, angle=aug_angle, flip_prob=0.5),
+        transform=transform_function(degrees=aug_angle, scale=aug_scale, flip_prob=flip_prob),
     )
     return train, valid
 
@@ -110,7 +104,6 @@ def transform_function(degrees,scale,flip_prob):
     
     transform_list.append(transforms.RandomAffine(degrees, scale = scale))
     transform_list.append(transforms.RandomHorizontalFlip(p=flip_prob))
-    #transform_list.append(transforms.ToPILImage())
     transform_list.append(transforms.Pad(37)) #all images should be 182x182.
     transform_list.append(transforms.ToTensor())
     
@@ -119,6 +112,7 @@ def transform_function(degrees,scale,flip_prob):
 
 # helper function for data visualization
 def visualize(**images):
+    
     """Plot images in one row."""
     n = len(images)
     plt.figure(figsize=(16, 5))
@@ -130,70 +124,104 @@ def visualize(**images):
         plt.imshow(image)
     plt.show()
     
-class Scale(object):
-
-    def __init__(self, scale):
-        self.scale = scale
-
-    def __call__(self, sample):
-        image, label = sample
-        scale = np.random.uniform(low=1.0, high=1.0 + self.scale)
-
-        image = rescale(
-            image,
-            scale,
-            multichannel=True,
-            preserve_range=True,
-            mode="constant",
-            anti_aliasing=False,
-        )
-        label = rescale(
-            label,
-            scale,
-            order=0,
-            multichannel=True,
-            preserve_range=True,
-            mode="constant",
-            anti_aliasing=False,
-        )
-
-        return image, label
+train_size = 0.75
+batch_size = 1
+EPOCHS = 100
+lr = 0.0001
+aug_angle = 25
+aug_scale = [1,1.5]
+flip_prob = 0.5
+num_workers = 1
+images_dir = "/Users/brianmccrindle/Documents/Research/TBIFinder_Final/Registered_Brains_FA/normalized_slices"
+labels_dir = "/Users/brianmccrindle/Documents/Research/TBIFinder_Final/Registered_Brains_FA/slice_labels"
 
 
-class Rotate(object):
+#smp specific variables
+ENCODER = 'resnet101'
+aux_params=dict(
+    pooling='avg',             # one of 'avg', 'max'
+    dropout=0.5,               # dropout ratio, default is None
+    activation='softmax2d',    # activation function, default is None. This is the output activation. softmax2d specifies dim = 1 
+    classes=1,                 # define number of output labels
+)
 
-    def __init__(self, angle):
-        self.angle = angle
+model = smp.Unet(encoder_name = ENCODER, in_channels=1, aux_params = aux_params)
 
-    def __call__(self, sample):
-        image, label = sample
+def train_validate():
+    if torch.cuda.is_available():
+        dev ="cuda:0"
+    else:
+        dev = "cpu"
+        
+    dev = torch.device(dev)
+    train_dataset, valid_dataset = datasets(images_dir, labels_dir, train_size, aug_angle, aug_scale, flip_prob)
+    
+    train_loader = DataLoader(train_dataset, batch_size, shuffle = True, num_workers = num_workers)
+    valid_loader = DataLoader(valid_dataset, batch_size, shuffle = True, num_workers = num_workers)
+    
+    model.to(dev) #cast the model onto the device 
+    optimizer = optim.Adam(model.parameters(), lr = lr) #learning rate should change 
+    loss_function = smp.utils.losses.DiceLoss()
+    #metrics = [smp.utils.metrics.IoU(threshold=0.5)]
+    
+    loss_train = []
+    loss_valid = []
+    
+    for epoch in range(EPOCHS):
+        for phase in ["train","val"]:
+            
+            #This determines which portions of the model will have gradients turned off or on. 
+            if phase == "train":
+                model.train() #put into training mode
+                loader = train_loader
+            else:
+                model.eval() #evaluation mode.
+                loader = valid_loader
+            
+            print(phase)
+            for ii, data in enumerate(loader): 
+                
+                brains = data[0] #[batch_size,1,256,256] 
+                labels = data[1]
+                
+                brains,labels = brains.to(dev), labels.to(dev) #put the data onto the device
+                predictions, masks = model(brains)
+                
+                loss = loss_function(predictions, labels)
+                if phase == "train":
+                    model.zero_grad()
+                    loss_train.append(loss.item())
+                    loss.backward()
+                    optimizer.step()
+                    
+                else:
+                    loss_valid.append(loss.item())
+                
+            print(f"Phase: {phase}. Epoch: {epoch}. Loss: {loss.item()}")
+        
+        return loss_train, loss_valid
+                
 
-        angle = np.random.uniform(low = -1 * self.angle, high = self.angle)
-        image = rotate(image, angle, resize=False, preserve_range=True, mode="constant")
-        label = rotate(
-            label, angle, resize=False, order=0, preserve_range=True, mode="constant"
-        )
-        return image, label
-
-class HorizontalFlip(object):
-
-    def __init__(self, flip_prob):
-        self.flip_prob = flip_prob
-
-    def __call__(self, sample):
-        image, label = sample
-
-        if np.random.rand() > self.flip_prob:
-            return image, label
-
-        image = np.fliplr(image).copy()
-        label = np.fliplr(label).copy()
-
-        return image, label
+loss_train, loss_valid = train_validate()
 
 
 
 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+# NOTES: 
 
 #PIL is some type of holder for data so if you want the actual array, you need to apply
 # img = np.array(Image.open(img_path))
