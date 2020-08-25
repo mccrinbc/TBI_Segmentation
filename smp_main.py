@@ -76,7 +76,7 @@ class TBI_dataset(ParentDataset): #Obtain the attributes of ParentDataset from t
         image = self.transform(image)
         label = self.transform(label)
              
-        return image, label, self.images_fps[self.mapping[ii]],self.labels_fps[self.mapping[ii]]
+        return image, label # self.images_fps[self.mapping[ii]],self.labels_fps[self.mapping[ii]]
     
     def __len__(self):
         return len(self.mapping)
@@ -110,44 +110,66 @@ def transform_function(degrees,scale,flip_prob):
     return Compose(transform_list)
 
 
-# helper function for data visualization
-def visualize(**images):
-    
-    """Plot images in one row."""
-    n = len(images)
-    plt.figure(figsize=(16, 5))
-    for i, (name, image) in enumerate(images.items()):
-        plt.subplot(1, n, i + 1)
-        plt.xticks([])
-        plt.yticks([])
-        plt.title(' '.join(name.split('_')).title())
-        plt.imshow(image)
-    plt.show()
+class DiceLoss(nn.Module):
+
+    def __init__(self):
+        super(DiceLoss, self).__init__()
+        self.smooth = 1.0
+
+    def forward(self, y_pred, y_true):
+        assert y_pred.size() == y_true.size()
+        y_pred = y_pred[:, 0].contiguous().view(-1)
+        y_true = y_true[:, 0].contiguous().view(-1)
+        intersection = (y_pred * y_true).sum()
+        dsc = (2. * intersection + self.smooth) / (
+            y_pred.sum() + y_true.sum() + self.smooth
+        )
+        return 1. - dsc
     
 train_size = 0.75
-batch_size = 1
-EPOCHS = 100
+batch_size = 5
+EPOCHS = 1
 lr = 0.0001
 aug_angle = 25
 aug_scale = [1,1.5]
 flip_prob = 0.5
 num_workers = 1
-images_dir = "/Users/brianmccrindle/Documents/Research/TBIFinder_Final/Registered_Brains_FA/normalized_slices"
-labels_dir = "/Users/brianmccrindle/Documents/Research/TBIFinder_Final/Registered_Brains_FA/slice_labels"
+#images_dir = "/Users/brianmccrindle/Documents/Research/TBIFinder_Final/Registered_Brains_FA/normalized_slices"
+#labels_dir = "/Users/brianmccrindle/Documents/Research/TBIFinder_Final/Registered_Brains_FA/slice_labels"
 
+images_dir = "/Users/brianmccrindle/Documents/Research/TBIFinder_Final/Registered_Brains_FA/test_slices"
+labels_dir = "/Users/brianmccrindle/Documents/Research/TBIFinder_Final/Registered_Brains_FA/test_labels"
 
 #smp specific variables
 ENCODER = 'resnet101'
 aux_params=dict(
     pooling='avg',             # one of 'avg', 'max'
     dropout=0.5,               # dropout ratio, default is None
-    activation='softmax2d',    # activation function, default is None. This is the output activation. softmax2d specifies dim = 1 
+    #activation='softmax2d',    # activation function, default is None. This is the output activation. softmax2d specifies dim = 1 
     classes=1,                 # define number of output labels
 )
 
-model = smp.Unet(encoder_name = ENCODER, in_channels=1, aux_params = aux_params)
+#classes = 2 for the softmax transformation. 
+model = smp.Unet(encoder_name = ENCODER, in_channels=1, classes = 1, aux_params = aux_params)
 
-def train_validate():
+def Weights(labels):
+    #expects an [batch_size,c,n,n] input 
+    
+    weights = []
+    for batch_num in range(0,labels.shape[0]):
+        num_ones = torch.sum(labels[batch_num,0,:,:]);
+        resolution = labels.shape[2] * labels.shape[3]
+        num_zeros = resolution - num_ones 
+        weights.append(num_zeros / (num_ones + 1))
+        
+    #this keeps the clas imbalance in check
+    return torch.Tensor(weights) #to ensure that we're getting a real number in the division  
+    
+
+def train_validate(lr):
+    
+    earlystop = False 
+    
     if torch.cuda.is_available():
         dev ="cuda:0"
     else:
@@ -161,12 +183,16 @@ def train_validate():
     
     model.to(dev) #cast the model onto the device 
     optimizer = optim.Adam(model.parameters(), lr = lr) #learning rate should change 
-    loss_function = smp.utils.losses.DiceLoss()
+    
+    loss_function = torch.nn.BCELoss() #this takes in a weighted input and incorporates a sigmoid transformation
+    #loss_function = smp.utils.losses.DiceLoss()
+    #loss_function = DiceLoss()
     #metrics = [smp.utils.metrics.IoU(threshold=0.5)]
     
     loss_train = []
     loss_valid = []
-    
+
+     
     for epoch in range(EPOCHS):
         for phase in ["train","val"]:
             
@@ -177,17 +203,24 @@ def train_validate():
             else:
                 model.eval() #evaluation mode.
                 loader = valid_loader
-            
-            print(phase)
+                  
             for ii, data in enumerate(loader): 
+                print(epoch, phase, ii)
                 
-                brains = data[0] #[batch_size,1,256,256] 
+                brains = data[0] #[batch_size,channels,height,width] 
                 labels = data[1]
                 
                 brains,labels = brains.to(dev), labels.to(dev) #put the data onto the device
-                predictions, masks = model(brains)
+                predictions, single_class = model(brains) #single class is not a useful output. 
+                
+                predictions = torch.sigmoid(predictions) #using this so that the output is bounded [0,1]
+                single_class = torch.sigmoid(single_class)
+                
+                weights = Weights(labels) #generate the weights for each slice in the batch
+                loss_function.pos_weight = weights 
                 
                 loss = loss_function(predictions, labels)
+                
                 if phase == "train":
                     model.zero_grad()
                     loss_train.append(loss.item())
@@ -196,13 +229,36 @@ def train_validate():
                     
                 else:
                     loss_valid.append(loss.item())
+                    
+                    #learning rate changes and early stopping
+                    if epoch > 0:
+                        if (epoch % 10) == 0: #if the epoch is divisable by 10
+                            meanVal = np.mean(loss_valid[epoch - 10 : epoch])
+                            if np.abs((meanVal - loss.item()) / meanVal) <= 0.05: #if the %difference is small
+                                for param_group in optimizer.param_groups:
+                                    lr = lr * 0.1 #reduce the learning rate by a factor of 10. 
+                                    param_group['lr'] = lr
+                        
+                        if (epoch % 50) == 0:
+                            meanVal = np.mean(loss_valid[epoch - 50 : epoch])
+                            if np.abs((meanVal - loss.item()) / meanVal) <= 0.05:
+                                earlystop = True
                 
-            print(f"Phase: {phase}. Epoch: {epoch}. Loss: {loss.item()}")
-        
-        return loss_train, loss_valid
-                
+                #Implementation of early stopping
+                if earlystop == True:
+                    torch.save(model.state_dict(), os.getcwd()) #save the model 
+                    break
+            else:
+                continue
+            break
+        else:
+            continue
+        break
+                            
+    print(f"Phase: {phase}. Epoch: {epoch}. Loss: {loss.item()}")
+    return brains, labels, predictions, single_class
 
-loss_train, loss_valid = train_validate()
+brains, labels, predictions, single_class = train_validate(lr)
 
 
 
@@ -226,6 +282,9 @@ loss_train, loss_valid = train_validate()
 #PIL is some type of holder for data so if you want the actual array, you need to apply
 # img = np.array(Image.open(img_path))
 
+#The learning rate should be reduced 
+#by a factor of 10 when the validation loss fails to improve for 10 consecutive epochs.
 
+#Early stopping should be implemented if validation loss does not improve over 50 epochs
 
 
