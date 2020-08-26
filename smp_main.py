@@ -3,6 +3,8 @@ import random
 import numpy as np
 from matplotlib import pyplot as plt
 from PIL import Image
+from datetime import datetime
+import pickle 
 
 import torch
 import torch.nn as nn
@@ -76,7 +78,7 @@ class TBI_dataset(ParentDataset): #Obtain the attributes of ParentDataset from t
         image = self.transform(image)
         label = self.transform(label)
              
-        return image, label # self.images_fps[self.mapping[ii]],self.labels_fps[self.mapping[ii]]
+        return image, label #, self.images_fps[self.mapping[ii]],self.labels_fps[self.mapping[ii]]
     
     def __len__(self):
         return len(self.mapping)
@@ -127,18 +129,18 @@ class DiceLoss(nn.Module):
         return 1. - dsc
     
 train_size = 0.75
-batch_size = 5
-EPOCHS = 1
+batch_size = 12
+EPOCHS = 25
 lr = 0.0001
 aug_angle = 25
 aug_scale = [1,1.5]
 flip_prob = 0.5
 num_workers = 1
-#images_dir = "/Users/brianmccrindle/Documents/Research/TBIFinder_Final/Registered_Brains_FA/normalized_slices"
-#labels_dir = "/Users/brianmccrindle/Documents/Research/TBIFinder_Final/Registered_Brains_FA/slice_labels"
+images_dir = "/Users/brianmccrindle/Documents/Research/TBIFinder_Final/Registered_Brains_FA/normalized_slices"
+labels_dir = "/Users/brianmccrindle/Documents/Research/TBIFinder_Final/Registered_Brains_FA/slice_labels"
 
-images_dir = "/Users/brianmccrindle/Documents/Research/TBIFinder_Final/Registered_Brains_FA/test_slices"
-labels_dir = "/Users/brianmccrindle/Documents/Research/TBIFinder_Final/Registered_Brains_FA/test_labels"
+#images_dir = "/Users/brianmccrindle/Documents/Research/TBIFinder_Final/Registered_Brains_FA/test_slices"
+#labels_dir = "/Users/brianmccrindle/Documents/Research/TBIFinder_Final/Registered_Brains_FA/test_labels"
 
 #smp specific variables
 ENCODER = 'resnet101'
@@ -191,9 +193,11 @@ def train_validate(lr):
     
     loss_train = []
     loss_valid = []
-
-     
+    epochLoss_train = []
+    epochLoss_valid = []
+    
     for epoch in range(EPOCHS):
+        image_count = 0
         for phase in ["train","val"]:
             
             #This determines which portions of the model will have gradients turned off or on. 
@@ -205,10 +209,12 @@ def train_validate(lr):
                 loader = valid_loader
                   
             for ii, data in enumerate(loader): 
-                print(epoch, phase, ii)
                 
                 brains = data[0] #[batch_size,channels,height,width] 
                 labels = data[1]
+                
+                image_count += len(brains)
+                print(epoch, phase, ii, image_count)
                 
                 brains,labels = brains.to(dev), labels.to(dev) #put the data onto the device
                 predictions, single_class = model(brains) #single class is not a useful output. 
@@ -217,18 +223,28 @@ def train_validate(lr):
                 single_class = torch.sigmoid(single_class)
                 
                 weights = Weights(labels) #generate the weights for each slice in the batch
-                loss_function.pos_weight = weights 
+                loss_function.pos_weight = weights                    
                 
-                loss = loss_function(predictions, labels)
+                loss = loss_function(predictions, labels) #loss changes here. 
                 
                 if phase == "train":
+                    #employ this so we don't get multiples in the same list. 
+                    if (loss_valid and ii == 0): #if loss_valid is NOT empty AND it's the first time we see this
+                        epochLoss_valid.append(loss_valid[-1]) #append the last value in the 
+                        
                     model.zero_grad()
                     loss_train.append(loss.item())
                     loss.backward()
                     optimizer.step()
                     
+                    print(f"Phase: {phase}. Epoch: {epoch}. Loss: {loss.item()}") 
+               
                 else:
+                    if (loss_train and ii == 0):#if loss_valid is NOT empty AND it's the first time we see this
+                        epochLoss_train.append(loss_train[-1]) #append the last value in the loss_train list.
+                        
                     loss_valid.append(loss.item())
+                    print(f"Phase: {phase}. Epoch: {epoch}. Loss: {loss.item()}") 
                     
                     #learning rate changes and early stopping
                     if epoch > 0:
@@ -242,8 +258,12 @@ def train_validate(lr):
                         if (epoch % 50) == 0:
                             meanVal = np.mean(loss_valid[epoch - 50 : epoch])
                             if np.abs((meanVal - loss.item()) / meanVal) <= 0.05:
-                                earlystop = True
+                                earlystop = True 
                 
+                #save the model at the end of this epoch.
+                date = datetime.now()
+                torch.save(model.state_dict(), os.path.join(os.getcwd(), "Registered_Brains_FA/models_saved", "TBI_model-epoch" + str(epoch) + '-' + str(date.date()) + '-' + str(date.hour) + '-' + str(date.minute) +".pt"))
+               
                 #Implementation of early stopping
                 if earlystop == True:
                     torch.save(model.state_dict(), os.getcwd()) #save the model 
@@ -254,14 +274,23 @@ def train_validate(lr):
         else:
             continue
         break
-                            
-    print(f"Phase: {phase}. Epoch: {epoch}. Loss: {loss.item()}")
-    return brains, labels, predictions, single_class
+    
+    #Need to add the last element from loss_valid to epochLoss_valid to equal the number of epochs. 
+    epochLoss_valid.append(loss_valid[-1])
+    return brains, labels, predictions, single_class, loss_train, loss_valid, epochLoss_train, epochLoss_valid, model.state_dict()
 
-brains, labels, predictions, single_class = train_validate(lr)
+brains, labels, predictions, single_class, loss_train, loss_valid, epochLoss_train, epochLoss_valid, model_state = train_validate(lr)
 
+date = datetime.now()
+torch.save(model_state, os.path.join(os.getcwd(), "Registered_Brains_FA/models_saved", "TBI_model-End-" + str(date.date()) + '-' + str(date.hour) + '-' + str(date.minute) +".pt"))
 
-
+# Saving the objects:
+with open('results.pkl', 'wb') as f:  # Python 3: open(..., 'wb')
+    pickle.dump([brains, labels, predictions, single_class, loss_train, loss_valid, epochLoss_train, epochLoss_valid], f)
+    
+# # Getting back the objects:
+# with open('objs.pkl','rb') as f:  # Python 3: open(..., 'rb')
+#     brains, labels, predictions, single_class, loss_train, loss_valid = pickle.load(f)
 
 
 
