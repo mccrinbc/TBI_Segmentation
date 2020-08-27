@@ -17,6 +17,8 @@ import torchvision
 from torchvision import transforms
 from torchvision.transforms import Compose
 
+import sklearn.metrics
+
 import segmentation_models_pytorch as smp #model we're using for now. 
 
 #we need to create a dataset class to obtain the training, validation, and testing sets
@@ -89,17 +91,26 @@ def datasets(images_dir, labels_dir, train_size, aug_angle, aug_scale, flip_prob
         images_dir = images_dir,
         labels_dir = labels_dir,
         train_size = 0.75,
-        subset="train",
-        transform=transform_function(degrees=aug_angle, scale=aug_scale, flip_prob=flip_prob),
+        subset = "train",
+        transform = transform_function(degrees=aug_angle, scale=aug_scale, flip_prob=flip_prob),
     )
     valid = TBI_dataset(
-        images_dir=images_dir,
+        images_dir = images_dir,
         labels_dir = labels_dir,
         train_size = 0.75,
-        subset="val",
-        transform=transform_function(degrees=aug_angle, scale=aug_scale, flip_prob=flip_prob),
+        subset = "val",
+        transform = transform_function(degrees=aug_angle, scale=aug_scale, flip_prob=flip_prob),
     )
-    return train, valid
+    
+    test = TBI_dataset(
+        images_dir = images_dir,
+        labels_dir = labels_dir,
+        train_size = 0.75,
+        subset="test",
+        transform = transform_function(degrees=aug_angle, scale=aug_scale, flip_prob=flip_prob),
+    )
+    
+    return train, valid, test
 
 def transform_function(degrees,scale,flip_prob):
     transform_list = []
@@ -153,6 +164,7 @@ aux_params=dict(
 
 #classes = 2 for the softmax transformation. 
 model = smp.Unet(encoder_name = ENCODER, in_channels=1, classes = 1, aux_params = aux_params)
+train_dataset, valid_dataset, test_dataset = datasets(images_dir, labels_dir, train_size, aug_angle, aug_scale, flip_prob)
 
 def Weights(labels):
     #expects an [batch_size,c,n,n] input 
@@ -168,7 +180,7 @@ def Weights(labels):
     return torch.Tensor(weights) #to ensure that we're getting a real number in the division  
     
 
-def train_validate(lr):
+def train_validate(train_dataset, valid_dataset, lr):
     
     earlystop = False 
     
@@ -178,7 +190,6 @@ def train_validate(lr):
         dev = "cpu"
         
     dev = torch.device(dev)
-    train_dataset, valid_dataset = datasets(images_dir, labels_dir, train_size, aug_angle, aug_scale, flip_prob)
     
     train_loader = DataLoader(train_dataset, batch_size, shuffle = True, num_workers = num_workers)
     valid_loader = DataLoader(valid_dataset, batch_size, shuffle = True, num_workers = num_workers)
@@ -278,7 +289,51 @@ def train_validate(lr):
     epochLoss_valid.append(loss_valid[-1])
     return brains, labels, predictions, single_class, loss_train, loss_valid, epochLoss_train, epochLoss_valid, model.state_dict()
 
-brains, labels, predictions, single_class, loss_train, loss_valid, epochLoss_train, epochLoss_valid, model_state = train_validate(lr)
+
+def testModel(test_dataset, modelPath, threshold): #model = the model class = smp.UNet()
+
+    total_images = 0
+    CM_values = [0,0,0,0] #tp, fn, fp, tn
+    model.load_state_dict(torch.load(modelPath))
+    
+    if torch.cuda.is_available():
+        dev ="cuda:0"
+    else:
+        dev = "cpu"
+        
+    dev = torch.device(dev)
+    model.to(dev) 
+    model.eval() #evaluation mode to turn off the gradients / training. 
+    
+    loader = DataLoader(test_dataset, batch_size, shuffle = True, num_workers = num_workers)
+    for ii, data in enumerate(loader):
+        
+        brains = data[0]
+        labels = data[1]
+        brains.to(dev)
+        labels.to(dev)
+        
+        total_images += brains.shape[0] #this would be the same if we used labels or predictions. 
+        print(total_images)
+        
+        predictions, _ = model(brains)
+        predictions = torch.sigmoid(predictions) 
+        
+        predictions_numpy = predictions.detach().numpy()
+        labels_numpy = labels.detach().numpy()
+        for j in range(predictions.shape[0]):
+            CM = sklearn.metrics.confusion_matrix(labels_numpy[j,0,:,:].ravel(), predictions_numpy[j,0,:,:].ravel() > threshold)
+            
+            #log the values to we don't get any spooky type of numerical overflow. 
+            CM_values[0] += CM[0][0]
+            CM_values[1] += CM[0][1]
+            CM_values[2] += CM[1][0]
+            CM_values[3] += CM[1][1]
+        
+    return np.divide(CM_values , (total_images*(256*256)))
+            
+    
+brains, labels, predictions, single_class, loss_train, loss_valid, epochLoss_train, epochLoss_valid, model_state = train_validate(train_dataset, valid_dataset,lr)
 
 date = datetime.now()
 torch.save(model_state, os.path.join(os.getcwd(), "Registered_Brains_FA/models_saved", "TBI_model-End-" + str(date.date()) + '-' + str(date.hour) + '-' + str(date.minute) +".pt"))
@@ -292,11 +347,10 @@ with open('results.pkl', 'wb') as f:  # Python 3: open(..., 'wb')
 #    brains, labels, predictions, single_class, loss_train, loss_valid, epochLoss_train, epochLoss_valid = pickle.load(f)
 
 
+threshold = 0.50
+modelPath = "/Users/brianmccrindle/Documents/Research/TBIFinder_Final/Registered_Brains_FA/models_saved/TBI_model-epoch2-2020-08-27-9-55.pt"
 
-
-
-
-
+CM_values = testModel(test_dataset, modelPath, threshold)
 
 
 
