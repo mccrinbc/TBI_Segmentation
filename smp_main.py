@@ -130,17 +130,17 @@ class DiceLoss(nn.Module):
     
 train_size = 0.75
 batch_size = 12
-EPOCHS = 25
+EPOCHS = 3
 lr = 0.0001
 aug_angle = 25
 aug_scale = [1,1.5]
 flip_prob = 0.5
 num_workers = 1
-images_dir = "/Users/brianmccrindle/Documents/Research/TBIFinder_Final/Registered_Brains_FA/normalized_slices"
-labels_dir = "/Users/brianmccrindle/Documents/Research/TBIFinder_Final/Registered_Brains_FA/slice_labels"
+#images_dir = "/Users/brianmccrindle/Documents/Research/TBIFinder_Final/Registered_Brains_FA/normalized_slices"
+#labels_dir = "/Users/brianmccrindle/Documents/Research/TBIFinder_Final/Registered_Brains_FA/slice_labels"
 
-#images_dir = "/Users/brianmccrindle/Documents/Research/TBIFinder_Final/Registered_Brains_FA/test_slices"
-#labels_dir = "/Users/brianmccrindle/Documents/Research/TBIFinder_Final/Registered_Brains_FA/test_labels"
+images_dir = "/Users/brianmccrindle/Documents/Research/TBIFinder_Final/Registered_Brains_FA/test_slices"
+labels_dir = "/Users/brianmccrindle/Documents/Research/TBIFinder_Final/Registered_Brains_FA/test_labels"
 
 #smp specific variables
 ENCODER = 'resnet101'
@@ -195,7 +195,7 @@ def train_validate(lr):
     loss_valid = []
     epochLoss_train = []
     epochLoss_valid = []
-    
+        
     for epoch in range(EPOCHS):
         image_count = 0
         for phase in ["train","val"]:
@@ -259,10 +259,6 @@ def train_validate(lr):
                             meanVal = np.mean(loss_valid[epoch - 50 : epoch])
                             if np.abs((meanVal - loss.item()) / meanVal) <= 0.05:
                                 earlystop = True 
-                
-                #save the model at the end of this epoch.
-                date = datetime.now()
-                torch.save(model.state_dict(), os.path.join(os.getcwd(), "Registered_Brains_FA/models_saved", "TBI_model-epoch" + str(epoch) + '-' + str(date.date()) + '-' + str(date.hour) + '-' + str(date.minute) +".pt"))
                
                 #Implementation of early stopping
                 if earlystop == True:
@@ -272,6 +268,9 @@ def train_validate(lr):
                 continue
             break
         else:
+            #save the model at the end of this epoch.
+            date = datetime.now()
+            torch.save(model.state_dict(), os.path.join(os.getcwd(), "Registered_Brains_FA/models_saved", "TBI_model-epoch" + str(epoch) + '-' + str(date.date()) + '-' + str(date.hour) + '-' + str(date.minute) +".pt"))
             continue
         break
     
@@ -289,8 +288,8 @@ with open('results.pkl', 'wb') as f:  # Python 3: open(..., 'wb')
     pickle.dump([brains, labels, predictions, single_class, loss_train, loss_valid, epochLoss_train, epochLoss_valid], f)
     
 # # Getting back the objects:
-# with open('objs.pkl','rb') as f:  # Python 3: open(..., 'rb')
-#     brains, labels, predictions, single_class, loss_train, loss_valid = pickle.load(f)
+#with open('/Users/brianmccrindle/Documents/Research/TBIFinder_Final/Registered_Brains_FA/models_saved/1/results.pkl','rb') as f:  
+#    brains, labels, predictions, single_class, loss_train, loss_valid, epochLoss_train, epochLoss_valid = pickle.load(f)
 
 
 
