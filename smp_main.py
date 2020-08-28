@@ -6,6 +6,11 @@ from PIL import Image
 from datetime import datetime
 import pickle 
 
+import argparse
+parser = argparse.ArgumentParser() 
+parser.add_argument('--seed', default=50, type=int)
+args = parser.parse_args()
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -141,17 +146,17 @@ class DiceLoss(nn.Module):
     
 train_size = 0.75
 batch_size = 12
-EPOCHS = 3
+EPOCHS = 1
 lr = 0.0001
 aug_angle = 25
 aug_scale = [1,1.5]
 flip_prob = 0.5
 num_workers = 1
-#images_dir = "/Users/brianmccrindle/Documents/Research/TBIFinder_Final/Registered_Brains_FA/normalized_slices"
-#labels_dir = "/Users/brianmccrindle/Documents/Research/TBIFinder_Final/Registered_Brains_FA/slice_labels"
+images_dir = "/Users/brianmccrindle/Documents/Research/TBIFinder_Final/Registered_Brains_FA/normalized_slices"
+labels_dir = "/Users/brianmccrindle/Documents/Research/TBIFinder_Final/Registered_Brains_FA/slice_labels"
 
-images_dir = "/Users/brianmccrindle/Documents/Research/TBIFinder_Final/Registered_Brains_FA/test_slices"
-labels_dir = "/Users/brianmccrindle/Documents/Research/TBIFinder_Final/Registered_Brains_FA/test_labels"
+#images_dir = "/Users/brianmccrindle/Documents/Research/TBIFinder_Final/Registered_Brains_FA/test_slices"
+#labels_dir = "/Users/brianmccrindle/Documents/Research/TBIFinder_Final/Registered_Brains_FA/test_labels"
 
 #smp specific variables
 ENCODER = 'resnet101'
@@ -289,6 +294,12 @@ def train_validate(train_dataset, valid_dataset, lr):
     epochLoss_valid.append(loss_valid[-1])
     return brains, labels, predictions, single_class, loss_train, loss_valid, epochLoss_train, epochLoss_valid, model.state_dict()
 
+def seed_init_fn(x):
+   seed = args.seed + x
+   np.random.seed(seed)
+   random.seed(seed)
+   torch.manual_seed(seed)
+   return
 
 def testModel(test_dataset, modelPath, threshold): #model = the model class = smp.UNet()
 
@@ -322,36 +333,50 @@ def testModel(test_dataset, modelPath, threshold): #model = the model class = sm
         predictions_numpy = predictions.detach().numpy()
         labels_numpy = labels.detach().numpy()
         for j in range(predictions.shape[0]):
-            CM = sklearn.metrics.confusion_matrix(labels_numpy[j,0,:,:].ravel(), predictions_numpy[j,0,:,:].ravel() > threshold)
+            #labels = [False, True] are needed to make sure we don't have errors with the shape of CM
+            CM = sklearn.metrics.confusion_matrix(labels_numpy[j,0,:,:].ravel(), predictions_numpy[j,0,:,:].ravel() > threshold, labels = [False,True])
+            try: 
+                CM_values[0] = CM_values[0] + CM[0][0]
+                CM_values[1] = CM_values[1] + CM[0][1]
+                CM_values[2] = CM_values[2] + CM[1][0]
+                CM_values[3] = CM_values[3] + CM[1][1]
+            except:
+                print("Error in Appending")
+                return CM, CM_values
             
-            #log the values to we don't get any spooky type of numerical overflow. 
-            CM_values[0] += CM[0][0]
-            CM_values[1] += CM[0][1]
-            CM_values[2] += CM[1][0]
-            CM_values[3] += CM[1][1]
-        
+    del loader #delete loader
     return np.divide(CM_values , (total_images*(256*256)))
             
     
-brains, labels, predictions, single_class, loss_train, loss_valid, epochLoss_train, epochLoss_valid, model_state = train_validate(train_dataset, valid_dataset,lr)
+#brains, labels, predictions, single_class, loss_train, loss_valid, epochLoss_train, epochLoss_valid, model_state = train_validate(train_dataset, valid_dataset,lr)
 
-date = datetime.now()
-torch.save(model_state, os.path.join(os.getcwd(), "Registered_Brains_FA/models_saved", "TBI_model-End-" + str(date.date()) + '-' + str(date.hour) + '-' + str(date.minute) +".pt"))
+#date = datetime.now()
+#torch.save(model_state, os.path.join(os.getcwd(), "Registered_Brains_FA/models_saved", "TBI_model-End-" + str(date.date()) + '-' + str(date.hour) + '-' + str(date.minute) +".pt"))
 
 # Saving the objects:
-with open('results.pkl', 'wb') as f:  # Python 3: open(..., 'wb')
-    pickle.dump([brains, labels, predictions, single_class, loss_train, loss_valid, epochLoss_train, epochLoss_valid], f)
+#with open('results.pkl', 'wb') as f:  # Python 3: open(..., 'wb')
+    #pickle.dump([brains, labels, predictions, single_class, loss_train, loss_valid, epochLoss_train, epochLoss_valid], f)
     
 # # Getting back the objects:
 #with open('/Users/brianmccrindle/Documents/Research/TBIFinder_Final/Registered_Brains_FA/models_saved/1/results.pkl','rb') as f:  
 #    brains, labels, predictions, single_class, loss_train, loss_valid, epochLoss_train, epochLoss_valid = pickle.load(f)
 
 
-threshold = 0.50
 modelPath = "/Users/brianmccrindle/Documents/Research/TBIFinder_Final/Registered_Brains_FA/models_saved/TBI_model-epoch2-2020-08-27-9-55.pt"
 
-CM_values = testModel(test_dataset, modelPath, threshold)
+thresholds = list(range(101))
+TPR_list = []
+FPR_list = []
+for threshold in thresholds[::2]: #skip every other one for now
+    #test the model to capture performance. Reported in the Confusion Matrix values
+    CM_values = testModel(test_dataset, modelPath, threshold) #tp, fn, fp, tn
 
+    TPR = CM_values[0] / (CM_values[0] + CM_values[1])
+    FPR = 1-TPR
+    TPR_list.append(TPR)
+    FPR_list.append(FPR)
+    print(TPR_list)
+    print(FPR_list)
 
 
 
