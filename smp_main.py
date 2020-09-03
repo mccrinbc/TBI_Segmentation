@@ -3,13 +3,10 @@ import random
 import numpy as np
 from matplotlib import pyplot as plt
 from PIL import Image
-from datetime import datetime
-import pickle 
 
-import argparse
-parser = argparse.ArgumentParser() 
-parser.add_argument('--seed', default=50, type=int)
-args = parser.parse_args()
+from datetime import datetime
+import pickle
+from tqdm import tqdm #loading bar  
 
 import torch
 import torch.nn as nn
@@ -23,6 +20,7 @@ from torchvision import transforms
 from torchvision.transforms import Compose
 
 import sklearn.metrics
+import evaluateModel #utility scripts. 
 
 import segmentation_models_pytorch as smp #model we're using for now. 
 
@@ -128,22 +126,6 @@ def transform_function(degrees,scale,flip_prob):
     return Compose(transform_list)
 
 
-class DiceLoss(nn.Module):
-
-    def __init__(self):
-        super(DiceLoss, self).__init__()
-        self.smooth = 1.0
-
-    def forward(self, y_pred, y_true):
-        assert y_pred.size() == y_true.size()
-        y_pred = y_pred[:, 0].contiguous().view(-1)
-        y_true = y_true[:, 0].contiguous().view(-1)
-        intersection = (y_pred * y_true).sum()
-        dsc = (2. * intersection + self.smooth) / (
-            y_pred.sum() + y_true.sum() + self.smooth
-        )
-        return 1. - dsc
-    
 train_size = 0.75
 batch_size = 12
 EPOCHS = 1
@@ -294,13 +276,6 @@ def train_validate(train_dataset, valid_dataset, lr):
     epochLoss_valid.append(loss_valid[-1])
     return brains, labels, predictions, single_class, loss_train, loss_valid, epochLoss_train, epochLoss_valid, model.state_dict()
 
-def seed_init_fn(x):
-   seed = args.seed + x
-   np.random.seed(seed)
-   random.seed(seed)
-   torch.manual_seed(seed)
-   return
-
 def testModel(test_dataset, modelPath, threshold): #model = the model class = smp.UNet()
 
     total_images = 0
@@ -317,7 +292,7 @@ def testModel(test_dataset, modelPath, threshold): #model = the model class = sm
     model.eval() #evaluation mode to turn off the gradients / training. 
     
     loader = DataLoader(test_dataset, batch_size, shuffle = True, num_workers = num_workers)
-    for ii, data in enumerate(loader):
+    for ii, data in tqdm(enumerate(loader)):
         
         brains = data[0]
         labels = data[1]
@@ -325,7 +300,7 @@ def testModel(test_dataset, modelPath, threshold): #model = the model class = sm
         labels.to(dev)
         
         total_images += brains.shape[0] #this would be the same if we used labels or predictions. 
-        print(total_images)
+        #print(total_images)
         
         predictions, _ = model(brains)
         predictions = torch.sigmoid(predictions) 
@@ -364,22 +339,23 @@ def testModel(test_dataset, modelPath, threshold): #model = the model class = sm
 
 modelPath = "/Users/brianmccrindle/Documents/Research/TBIFinder_Final/Registered_Brains_FA/models_saved/TBI_model-epoch2-2020-08-27-9-55.pt"
 
-thresholds = list(range(101))
+#thresholds = np.array(range(101)) / 100
+thresholds = [0,0.1,0.2,0.3,0.4,0.5,0.6,0.7,0.8,0.9,1]
 TPR_list = []
 FPR_list = []
-for threshold in thresholds[::2]: #skip every other one for now
+for threshold in tqdm(thresholds): #skip every other one for now
     #test the model to capture performance. Reported in the Confusion Matrix values
     CM_values = testModel(test_dataset, modelPath, threshold) #tp, fn, fp, tn
 
     TPR = CM_values[0] / (CM_values[0] + CM_values[1])
-    FPR = 1-TPR
+    FPR = CM_values[2] / (CM_values[2] + CM_values[3])
     TPR_list.append(TPR)
     FPR_list.append(FPR)
     print(TPR_list)
     print(FPR_list)
 
-
-
+#graph of the ROC curve with AUC in legend. 
+evaluateModel.ROC_AUC(FPR_list, TPR_list) #from the utility scripts. 
 
 
 
@@ -387,7 +363,7 @@ for threshold in thresholds[::2]: #skip every other one for now
 # NOTES: 
 
 #PIL is some type of holder for data so if you want the actual array, you need to apply
-# img = np.array(Image.open(img_path))
+#img = np.array(Image.open(img_path))
 
 #The learning rate should be reduced 
 #by a factor of 10 when the validation loss fails to improve for 10 consecutive epochs.

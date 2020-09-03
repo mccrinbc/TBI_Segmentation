@@ -1,7 +1,7 @@
-from sklearn.metrics import roc_curve, auc
-from matplotlib import plot as plt
+from sklearn.metrics import auc
+from matplotlib import pyplot as plt
 
-def ROC_AUC(ground_truth, prediction):
+def ROC_AUC(FPR_list, TPR_list):
     
     """
     Parameters
@@ -15,12 +15,10 @@ def ROC_AUC(ground_truth, prediction):
     -------
     None.
     """
-    
-    fpr, tpr, _ = roc_curve(ground_truth,prediction)
-    roc_auc = auc(fpr,tpr)
+    roc_auc = auc(FPR_list,TPR_list)
     
     fig, ax = plt.subplots(1,1)
-    ax.plot(fpr, tpr, label='ROC curve (area = %0.2f)' % roc_auc)
+    ax.plot(FPR_list, TPR_list, label='ROC curve (area = %0.2f)' % roc_auc)
     ax.plot([0, 1], [0, 1], 'k--')
     ax.set_xlim([0.0, 1.0])
     ax.set_ylim([0.0, 1.05])
