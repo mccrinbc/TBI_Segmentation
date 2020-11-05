@@ -24,19 +24,20 @@ import evaluateModel
 
 from matplotlib import pyplot as plt
 
-import batch_testing_script #user defined. 
+import batch_testing_script #user defined.
+import image_indicies
 
 #Errors associated to potantial randomness / non-deterministic behaviour is a VERY common issue in PT. 
 #Look at the following github discussion for more information: 
 #https://github.com/pytorch/pytorch/issues/7068
 #      sbelharbi commented on Apr 19, 2019
 
-#seed = 42
+seed = 7733
 #torch.manual_seed(seed)
 #torch.cuda.manual_seed(seed)
 #torch.cuda.manual_seed_all(seed)  # if you are using multi-GPU.
-#np.random.seed(seed)  # Numpy module.
-#random.seed(seed)  # Python random module.
+np.random.seed(seed)  # Numpy module.
+random.seed(seed)  # Python random module.
 #torch.manual_seed(seed)
 #torch.backends.cudnn.benchmark = False
 #torch.backends.cudnn.deterministic = True
@@ -68,10 +69,13 @@ class TBI_dataset(ParentDataset): #Obtain the attributes of ParentDataset from t
         #We define a mapping to use when calling the Dataset loader based on the parameter "mapping"
         if subset == "train":
             self.mapping = mapping['train']['set']
+            print(self.mapping)
         elif subset == "val":
             self.mapping = mapping['val']['set']
+            print(self.mapping)
         elif subset == "test":
             self.mapping = mapping['test']['set']
+            print(self.mapping)
         else:
             print("subset parameter requires train, val, or test exactly.")
 
@@ -93,9 +97,9 @@ class TBI_dataset(ParentDataset): #Obtain the attributes of ParentDataset from t
         return len(self.mapping)
     
     
-def datasets(images_dir, labels_dir, train_size, aug_angle, aug_scale, flip_prob):
+def datasets(images_dir, labels_dir, train_size, aug_angle, aug_scale, flip_prob, mapping):
     
-    mapping = return_image_indicies(images_dir,labels_dir, train_size, random_sampling = True)
+    #mapping = return_image_indicies(images_dir,labels_dir, train_size, random_sampling = True)
     
     train = TBI_dataset(
         images_dir = images_dir,
@@ -121,40 +125,6 @@ def datasets(images_dir, labels_dir, train_size, aug_angle, aug_scale, flip_prob
     )
     
     return train, valid, test
-
-def return_image_indicies(images_dir, labels_dir, train_size, random_sampling = True):
-    #This function returns a dictionary of indicies that correspond to images in the dataset. 
-    #Separate function and called ONCE to ensure that multiple sets are not being created. 
-    
-    #filter and sort the list
-    ImageIds = sorted(list(filter(('.DS_Store').__ne__,os.listdir(images_dir)))) 
-    LabelIds = sorted(list(filter(('.DS_Store').__ne__,os.listdir(labels_dir))))
-
-    images_fps = [os.path.join(images_dir, image_id) for image_id in ImageIds] #full_paths to slices
-    labels_fps = [os.path.join(labels_dir, image_id) for image_id in LabelIds] #full_paths to labels
-
-    if random_sampling == True:
-        samples = list(range(0,len(images_fps))) #create a list of numbers
-        #random.seed(seed) #set the seed
-
-        #random sample train_size amount and then do a train/validation split 
-        indicies = random.sample(samples,round(train_size*len(samples)))
-        val_indicies = indicies[0:round(len(indicies)*0.15)] #15% of the dataset goes towards validation.
-        train_indicies = indicies[round(len(indicies)*0.15) : len(indicies)]
-
-        test_indicies = samples
-        for j in sorted(indicies, reverse = True): #remove the train/val indicies from test set
-            del test_indicies[j]
-
-        #suffles without replacement. 
-        test_indicies = random.sample(test_indicies, len(test_indicies)) 
-    
-    mapping = {}
-    mapping['train'] = { 'set' : train_indicies}
-    mapping['val'] = { 'set' : val_indicies}
-    mapping['test'] = { 'set' : test_indicies}
-    
-    return mapping
 
 def transform_function(degrees,scale,flip_prob):
     transform_list = []
@@ -437,9 +407,17 @@ def testModel(test_dataset, modelPath, threshold): #model = the model class = sm
 tests = batch_testing_script.report_tests()
 batch_results = []
 
+images_dir = "/home/mccrinbc/Data_Removed_Useless_Slices/normalized_slices"
+labels_dir = "/home/mccrinbc/Data_Removed_Useless_Slices/slice_labels"
+#Train size is always the same (for now). Implement a better solution later. 
+#train_size = tests[ii]['train_size']
+train_size = 0.75
+
+#We need to run the train/val/test indicies split before we go into the for loop. 
+#For this reason, we've developed a small script to do this sampling for us, and to confirm that it's consistant. 
+mapping = image_indicies.return_image_indicies(images_dir, labels_dir, train_size, seed, random_sampling = True)
+
 for ii in tests:
-	
-	train_size = tests[ii]['train_size']
 	batch_size = tests[ii]['batch_size']
 	EPOCHS = tests[ii]['EPOCHS']
 	lr = tests[ii]['lr']
@@ -447,9 +425,6 @@ for ii in tests:
 	aug_angle = tests[ii]['aug_angle']
 	flip_prob = tests[ii]['flip_prob']
 	num_workers = tests[ii]['num_workers']
-
-	images_dir = "/home/mccrinbc/Registered_Brains_FA/normalized_slices"
-	labels_dir = "/home/mccrinbc/Registered_Brains_FA/slice_labels"
 
 	#images_dir = "/Users/brianmccrindle/Documents/Research/TBIFinder_Final/Registered_Brains_FA/test_slices"
 	#labels_dir = "/Users/brianmccrindle/Documents/Research/TBIFinder_Final/Registered_Brains_FA/test_labels"
@@ -466,7 +441,7 @@ for ii in tests:
 	#classes = 2 for the softmax transformation. 
 	model = smp.Unet(encoder_name = ENCODER, in_channels=1, classes = 1, aux_params = aux_params)
 
-	train_dataset, valid_dataset, test_dataset = datasets(images_dir, labels_dir, train_size, aug_angle, aug_scale, flip_prob)
+	train_dataset, valid_dataset, test_dataset = datasets(images_dir, labels_dir, train_size, aug_angle, aug_scale, flip_prob, mapping) #now takes in the mapping dictionary for image samples. 
 
 	#Training Cell 
 	brains, labels, predictions, single_class, loss_train, loss_valid, epochLoss_train, epochLoss_valid, model_state, lr_final = train_validate(train_dataset, valid_dataset, lr)
@@ -531,6 +506,7 @@ for ii in tests:
 	#modelPath = "/Users/brianmccrindle/Documents/Research/TBIFinder_Final/Registered_Brains_FA/models_saved/TBI_model-epoch2-2020-08-27-9-55.pt"
 	    
 	thresholds = np.arange(0,1.05,0.05) #skipping every other element, [[0.   0.05 0.1 ... 1]
+	#thresholds = np.arange(0,0.15,0.05) #skipping every other element, [[0.   0.05 0.1 ... 1]
 	#thresholds = [0,0.1,0.2,0.3,0.4,0.5,0.6,0.7,0.8,0.9,1]
 	TPR_list = [] #This is also known as RECALL. 
 	FPR_list = []
