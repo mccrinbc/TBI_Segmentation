@@ -32,13 +32,12 @@ import image_indicies
 #https://github.com/pytorch/pytorch/issues/7068
 #      sbelharbi commented on Apr 19, 2019
 
-seed = 7733
+seed = 1010
 #torch.manual_seed(seed)
 #torch.cuda.manual_seed(seed)
 #torch.cuda.manual_seed_all(seed)  # if you are using multi-GPU.
 np.random.seed(seed)  # Numpy module.
 random.seed(seed)  # Python random module.
-#torch.manual_seed(seed)
 #torch.backends.cudnn.benchmark = False
 #torch.backends.cudnn.deterministic = True
 
@@ -277,8 +276,8 @@ def train_validate(train_dataset, valid_dataset, lr):
                     if epoch > 0:
                         if (epoch % 10) == 0: #if the epoch is divisable by 10
                             meanVal = np.mean(loss_valid[epoch - 5 : epoch])
-                            print(meanVal, np.abs((meanVal - loss.item()) / meanVal) <= 0.3)
-                            if (np.abs((meanVal - loss.item()) / meanVal) <= 0.3 and lr_flag): #if the % difference is small
+                            print(meanVal, np.abs((meanVal - loss.item()) / meanVal) <= 0.4)
+                            if (np.abs((meanVal - loss.item()) / meanVal) <= 0.4 and lr_flag): #if the % difference is small
                             #if epoch == 40 and lr_flag: #doing this for now. 
                                 lr = lr * 0.1
                                 lr_flag = False
@@ -288,7 +287,7 @@ def train_validate(train_dataset, valid_dataset, lr):
                                     param_group['lr'] = lr
                                     #print(optimizer)
                         
-                        if (epoch % 50) == 0:
+                        if (epoch % 100) == 0:
                             meanVal = np.mean(loss_valid[epoch - 50 : epoch])
                             if np.abs((meanVal - loss.item()) / meanVal) <= 0.05:
                                 earlystop = True 
@@ -296,7 +295,7 @@ def train_validate(train_dataset, valid_dataset, lr):
                 #Implementation of early stopping
                 if earlystop == True:
                     date = datetime.now()
-                    torch.save(model.state_dict(), os.path.join(os.getcwd(), "Registered_Brains_FA/models_saved", "TBI_model-epoch" + str(epoch) + '-' + str(date.date()) + '-' + str(date.hour) + '-' + str(date.minute) +"-EARLYSTOP.pt")) #save the model 
+                    torch.save(model.state_dict(), os.path.join(os.getcwd(), 'results_TBI_model-' + str(date.date()) + '-' + str(date.hour) + '-' + str(date.minute) + '-EARLYSTOP.pt')) #save the model 
                     break
             else:
                 continue
@@ -401,7 +400,7 @@ def testModel(test_dataset, modelPath, threshold): #model = the model class = sm
     del loader #delete loader, might be wrong to do this
     return np.divide(CM_values , (total_images*(256*256))), np.mean(loss_set) #, np.divide(np.sum(mean_IoUs), len(mean_IoUs))
 
-
+#######################################################################################################################
 
 ## Read the tests from batch_testing_script ##
 tests = batch_testing_script.report_tests()
@@ -438,13 +437,18 @@ for ii in tests:
 	    classes=1,                 # define number of output labels
 	)
 
-	#classes = 2 for the softmax transformation. 
+	#classes = 2 for the softmax transformation.
+#	model = getattr(smp, model_arch)
+#	setattr(model, 'encoder_name', ENCODER)
+#	setattr(model, 'in_channels' , 1)
+#	setattr(model, 'classes'     , 1)
+#	setattr(model, 'aux_params', aux_params)
 	model = smp.Unet(encoder_name = ENCODER, in_channels=1, classes = 1, aux_params = aux_params)
 
 	train_dataset, valid_dataset, test_dataset = datasets(images_dir, labels_dir, train_size, aug_angle, aug_scale, flip_prob, mapping) #now takes in the mapping dictionary for image samples. 
 
 	#Training Cell 
-	brains, labels, predictions, single_class, loss_train, loss_valid, epochLoss_train, epochLoss_valid, model_state, lr_final = train_validate(train_dataset, valid_dataset, lr)
+	brains, labels, predictions, single_class, loss_train, loss_valid, epochLoss_train, epochLoss_valid, model_state, lr_final,  = train_validate(train_dataset, valid_dataset, lr)
 	    
 	date = datetime.now()
 	base = "results_TBI_model-End-" + str(date.date()) + '-' + str(date.hour) + '-' + str(date.minute)
@@ -488,6 +492,11 @@ for ii in tests:
 
 	#Testing Loop. 
 	del model #This removes any confliction with an existing model running on the GPU. 
+#	model = getattr(smp, model_arch)
+#	setattr(model, 'encoder_name', ENCODER)
+#	setattr(model, 'in_channels' , 1)
+#	setattr(model, 'classes'     , 1)
+#	setattr(model, 'aux_params', aux_params)
 	model = smp.Unet(encoder_name = ENCODER, in_channels=1, classes = 1, aux_params = aux_params)
 	    
 	#read pickle

@@ -1,7 +1,6 @@
 import os 
 import random
 import numpy as np
-from matplotlib import pyplot as plt
 from PIL import Image
 
 from datetime import datetime
@@ -9,18 +8,14 @@ import pickle
 from tqdm import tqdm #loading bar  
 
 import torch
-import torch.nn as nn
-import torch.nn.functional as F
 import torch.optim as optim
 from torch.utils.data import DataLoader
 from torch.utils.data import Dataset as ParentDataset
 
-import torchvision 
 from torchvision import transforms
 from torchvision.transforms import Compose
 
 import sklearn.metrics
-import evaluateModel #utility scripts. 
 
 import segmentation_models_pytorch as smp #model we're using for now. 
 
@@ -77,7 +72,8 @@ class TBI_dataset(ParentDataset): #Obtain the attributes of ParentDataset from t
     def __getitem__(self, ii): #ii is the index
         
         #Current implementations of transforms only use PIL images.
-        image = Image.open(self.images_fps[self.mapping[ii]]) #open as PIL image.
+        #Apparently we can use np.array(Image.open(...)) to remove the error that happens each epoch
+        image = Image.open(self.images_fps[self.mapping[ii]]) #open as PIL image. 
         label = Image.open(self.labels_fps[self.mapping[ii]])
         
         image = self.transform(image)
@@ -120,7 +116,15 @@ def transform_function(degrees,scale,flip_prob):
     
     transform_list.append(transforms.RandomAffine(degrees, scale = scale))
     transform_list.append(transforms.RandomHorizontalFlip(p=flip_prob))
-    transform_list.append(transforms.Pad(37)) #all images should be 182x182.
+    transform_list.append(transforms.Pad(37)) #all images should be 182x182 before padding. 
+    transform_list.append(transforms.ToTensor())
+    
+    return Compose(transform_list)
+
+def transform_function_postTesting():
+    transform_list = []
+
+    transform_list.append(transforms.Pad(37)) #all images should be 182x182 before padding. 
     transform_list.append(transforms.ToTensor())
     
     return Compose(transform_list)
@@ -128,14 +132,14 @@ def transform_function(degrees,scale,flip_prob):
 
 train_size = 0.75
 batch_size = 12
-EPOCHS = 1
+EPOCHS = 40
 lr = 0.0001
 aug_angle = 25
 aug_scale = [1,1.5]
 flip_prob = 0.5
 num_workers = 1
-images_dir = "/Users/brianmccrindle/Documents/Research/TBIFinder_Final/Registered_Brains_FA/normalized_slices"
-labels_dir = "/Users/brianmccrindle/Documents/Research/TBIFinder_Final/Registered_Brains_FA/slice_labels"
+images_dir = "/home/mccrinbc/Registered_Brains_FA/normalized_slices"
+labels_dir = "/home/mccrinbc/Registered_Brains_FA/slice_labels"
 
 #images_dir = "/Users/brianmccrindle/Documents/Research/TBIFinder_Final/Registered_Brains_FA/test_slices"
 #labels_dir = "/Users/brianmccrindle/Documents/Research/TBIFinder_Final/Registered_Brains_FA/test_labels"
@@ -172,7 +176,7 @@ def train_validate(train_dataset, valid_dataset, lr):
     earlystop = False 
     
     if torch.cuda.is_available():
-        dev ="cuda:0"
+        dev ="cuda:2"
     else:
         dev = "cpu"
         
@@ -230,7 +234,7 @@ def train_validate(train_dataset, valid_dataset, lr):
                     if (loss_valid and ii == 0): #if loss_valid is NOT empty AND it's the first time we see this
                         epochLoss_valid.append(loss_valid[-1]) #append the last value in the 
                         
-                    model.zero_grad()
+                    model.zero_grad()# for p in model.parameters(): p.grad = None # for more efficient computation
                     loss_train.append(loss.item())
                     loss.backward()
                     optimizer.step()
@@ -260,15 +264,16 @@ def train_validate(train_dataset, valid_dataset, lr):
                
                 #Implementation of early stopping
                 if earlystop == True:
-                    torch.save(model.state_dict(), os.getcwd()) #save the model 
+                    date = datetime.now()
+                    torch.save(model.state_dict(), os.path.join(os.getcwd(), "Registered_Brains_FA/models_saved", "TBI_model-epoch" + str(epoch) + '-' + str(date.date()) + '-' + str(date.hour) + '-' + str(date.minute) +"-EARLYSTOP.pt")) #save the model 
                     break
             else:
                 continue
             break
         else:
             #save the model at the end of this epoch.
-            date = datetime.now()
-            torch.save(model.state_dict(), os.path.join(os.getcwd(), "Registered_Brains_FA/models_saved", "TBI_model-epoch" + str(epoch) + '-' + str(date.date()) + '-' + str(date.hour) + '-' + str(date.minute) +".pt"))
+            #date = datetime.now()
+            #torch.save(model.state_dict(), os.path.join(os.getcwd(), "Registered_Brains_FA/models_saved", "TBI_model-epoch" + str(epoch) + '-' + str(date.date()) + '-' + str(date.hour) + '-' + str(date.minute) + ".pt"))
             continue
         break
     
@@ -283,7 +288,8 @@ def testModel(test_dataset, modelPath, threshold): #model = the model class = sm
     model.load_state_dict(torch.load(modelPath))
     
     if torch.cuda.is_available():
-        dev ="cuda:0"
+        dev ="cuda:2"
+        print("GPU is active")
     else:
         dev = "cpu"
         
@@ -296,8 +302,10 @@ def testModel(test_dataset, modelPath, threshold): #model = the model class = sm
         
         brains = data[0]
         labels = data[1]
-        brains.to(dev)
-        labels.to(dev)
+        
+        #move the data to the GPU 
+        brains = brains.to(dev)
+        labels = labels.to(dev)
         
         total_images += brains.shape[0] #this would be the same if we used labels or predictions. 
         #print(total_images)
@@ -305,8 +313,8 @@ def testModel(test_dataset, modelPath, threshold): #model = the model class = sm
         predictions, _ = model(brains)
         predictions = torch.sigmoid(predictions) 
         
-        predictions_numpy = predictions.detach().numpy()
-        labels_numpy = labels.detach().numpy()
+        predictions_numpy = predictions.cpu().detach().numpy()
+        labels_numpy = labels.cpu().detach().numpy()
         for j in range(predictions.shape[0]):
             #labels = [False, True] are needed to make sure we don't have errors with the shape of CM
             CM = sklearn.metrics.confusion_matrix(labels_numpy[j,0,:,:].ravel(), predictions_numpy[j,0,:,:].ravel() > threshold, labels = [False,True])
@@ -321,42 +329,75 @@ def testModel(test_dataset, modelPath, threshold): #model = the model class = sm
             
     del loader #delete loader
     return np.divide(CM_values , (total_images*(256*256)))
-            
-    
-#brains, labels, predictions, single_class, loss_train, loss_valid, epochLoss_train, epochLoss_valid, model_state = train_validate(train_dataset, valid_dataset,lr)
 
-#date = datetime.now()
-#torch.save(model_state, os.path.join(os.getcwd(), "Registered_Brains_FA/models_saved", "TBI_model-End-" + str(date.date()) + '-' + str(date.hour) + '-' + str(date.minute) +".pt"))
 
-# Saving the objects:
-#with open('results.pkl', 'wb') as f:  # Python 3: open(..., 'wb')
-    #pickle.dump([brains, labels, predictions, single_class, loss_train, loss_valid, epochLoss_train, epochLoss_valid], f)
+
+###################################################################################################################
+
+
+
+#This is a funky way of getting around the Pickle issue of not being able to find "TBI_dataset" 
+mode = input("Train/Val (tv), Test (t), or Analyze (a)")
+if mode == 'tv':
+    brains, labels, predictions, single_class, loss_train, loss_valid, epochLoss_train, epochLoss_valid, model_state = train_validate(train_dataset, valid_dataset,lr)
     
+    date = datetime.now()
+    torch.save(model_state, os.path.join(os.getcwd(), "Registered_Brains_FA/models_saved", "TBI_model-End-" + str(date.date()) + '-' + str(date.hour) + '-' + str(date.minute) +".pt"))
+    
+    # Saving the objects:
+    with open('results.pkl', 'wb') as f:  # Python 3: open(..., 'wb')
+        pickle.dump([brains, labels, predictions, single_class, loss_train, loss_valid, epochLoss_train, epochLoss_valid, test_dataset], f)
+        
+elif mode == 't':
 # # Getting back the objects:
-#with open('/Users/brianmccrindle/Documents/Research/TBIFinder_Final/Registered_Brains_FA/models_saved/1/results.pkl','rb') as f:  
-#    brains, labels, predictions, single_class, loss_train, loss_valid, epochLoss_train, epochLoss_valid = pickle.load(f)
+    del model 
+    model = smp.Unet(encoder_name = ENCODER, in_channels=1, classes = 1, aux_params = aux_params)
+    
+    #read pickle
+    with open('results.pkl','rb') as f:  
+        brains, labels, predictions, single_class, loss_train, loss_valid, epochLoss_train, epochLoss_valid, test_dataset = pickle.load(f)
+        
+    modelPath = input("Filepath to the model you're Looking to instantiate: ")
+    #modelPath = "/Users/brianmccrindle/Documents/Research/TBIFinder_Final/Registered_Brains_FA/models_saved/TBI_model-epoch2-2020-08-27-9-55.pt"
+    
+    thresholds = np.array(range(101)) / 100
+    #thresholds = [0,0.1,0.2,0.3,0.4,0.5,0.6,0.7,0.8,0.9,1]
+    TPR_list = []
+    FPR_list = []
+    for threshold in tqdm(thresholds): #skip every other one for now
+        #test the model to capture performance. Reported in the Confusion Matrix values
+        CM_values = testModel(test_dataset, modelPath, threshold) #tp, fn, fp, tn
+    
+        TPR = CM_values[0] / (CM_values[0] + CM_values[1])
+        FPR = CM_values[2] / (CM_values[2] + CM_values[3])
+        TPR_list.append(TPR)
+        FPR_list.append(FPR)
+        print(TPR_list)
+        print(FPR_list)
+        
+    with open('test_results.pkl', 'wb') as f:  # Python 3: open(..., 'wb')
+        pickle.dump([TPR_list,FPR_list], f)
+    
+    #graph of the ROC curve with AUC in legend. 
+    #evaluateModel.ROC_AUC(FPR_list, TPR_list) #from the utility scripts.
+
+elif mode == 'a':
+    modelPath = input("Filepath to the model you're Looking to instantiate: ")
+    model.load_state_dict(torch.load(modelPath))
+    model.eval() #put into evaluation mode
+    
+    with open('results.pkl','rb') as f:  
+        brains, labels, predictions, single_class, loss_train, loss_valid, epochLoss_train, epochLoss_valid, test_dataset = pickle.load(f)
+        
+    loader = DataLoader(test_dataset, batch_size, shuffle = True, num_workers = num_workers)
+
+else:
+    print("Invalid Input. Only Accept tv or t for train/val and test, respectively.")
 
 
-modelPath = "/Users/brianmccrindle/Documents/Research/TBIFinder_Final/Registered_Brains_FA/models_saved/TBI_model-epoch2-2020-08-27-9-55.pt"
 
-#thresholds = np.array(range(101)) / 100
-thresholds = [0,0.1,0.2,0.3,0.4,0.5,0.6,0.7,0.8,0.9,1]
-TPR_list = []
-FPR_list = []
-for threshold in tqdm(thresholds): #skip every other one for now
-    #test the model to capture performance. Reported in the Confusion Matrix values
-    CM_values = testModel(test_dataset, modelPath, threshold) #tp, fn, fp, tn
-
-    TPR = CM_values[0] / (CM_values[0] + CM_values[1])
-    FPR = CM_values[2] / (CM_values[2] + CM_values[3])
-    TPR_list.append(TPR)
-    FPR_list.append(FPR)
-    print(TPR_list)
-    print(FPR_list)
-
-#graph of the ROC curve with AUC in legend. 
-evaluateModel.ROC_AUC(FPR_list, TPR_list) #from the utility scripts. 
-
+#caluclate the total number of parameters for the model
+#numParams = sum(p.numel() for p in model.parameters())
 
 
 
@@ -369,5 +410,3 @@ evaluateModel.ROC_AUC(FPR_list, TPR_list) #from the utility scripts.
 #by a factor of 10 when the validation loss fails to improve for 10 consecutive epochs.
 
 #Early stopping should be implemented if validation loss does not improve over 50 epochs
-
-
